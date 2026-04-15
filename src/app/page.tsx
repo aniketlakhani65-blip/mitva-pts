@@ -41,7 +41,7 @@ export default async function Dashboard() {
   const todayEnd = endOfDay(now);
   const weekEnd = endOfDay(addDays(now, 7));
   const monthStart = startOfMonth(now);
-  const notDoneFilter = { notIn: ["DISPATCHED", "CANCELLED"] as const };
+  const notDoneFilter = { notIn: ["DISPATCHED", "CANCELLED"] };
 
   // All counts in parallel — single round-trip fan-out
   const [
