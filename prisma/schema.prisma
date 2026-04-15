@@ -1,0 +1,252 @@
+// ============================================================================
+// Jewellery Production Tracking System — Prisma Schema
+// Version: 1.1 (SQLite dev)
+// Database: SQLite (swap provider to "postgresql" for production)
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// NOTE on enums: SQLite does not support native enums in Prisma, so the
+// following fields are stored as plain strings. The allowed values are
+// enforced by TypeScript via `src/lib/enums.ts` (import those constants
+// rather than writing raw string literals throughout the code).
+//
+//   UserRole     : ADMIN | SALES | DEPARTMENT_HEAD | KARIGAR | QC | VIEWER
+//   CustomerType : RETAIL | WHOLESALE | END_CUSTOMER | INTERNAL
+//   Priority     : NORMAL | RUSH | VIP
+//   OrderStatus  : DRAFT | IN_PROGRESS | ON_HOLD | READY_FOR_DISPATCH | DISPATCHED | CANCELLED
+//   MetalType    : GOLD_22K | GOLD_18K | GOLD_14K | SILVER | PLATINUM
+//   MetalColor   : YELLOW | WHITE | ROSE | NA
+//   StageStatus  : PENDING | IN_PROGRESS | ON_HOLD | COMPLETED | REWORK | SKIPPED
+//   AuditAction  : CREATE | UPDATE | DELETE | STAGE_IN | STAGE_OUT | LOGIN | LOGOUT
+
+// ----------------------------------------------------------------------------
+// USER & AUTH
+// ----------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         String   @default("VIEWER")
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  auditLogs        AuditLog[]
+  createdOrders    Order[]        @relation("OrderCreatedBy")
+  stageTransitions StageHistory[] @relation("StageRecordedBy")
+
+  @@index([email])
+  @@index([role])
+}
+
+// ----------------------------------------------------------------------------
+// CUSTOMER
+// ----------------------------------------------------------------------------
+
+model Customer {
+  id        String   @id @default(cuid())
+  name      String
+  phone     String?
+  email     String?
+  address   String?
+  type      String   @default("RETAIL")
+  gstNo     String?
+  notes     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orders Order[]
+
+  @@index([name])
+  @@index([phone])
+}
+
+// ----------------------------------------------------------------------------
+// ORDER
+// ----------------------------------------------------------------------------
+
+model Order {
+  id               String    @id @default(cuid())
+  jobNo            String    @unique
+  customerId       String
+  customer         Customer  @relation(fields: [customerId], references: [id])
+
+  orderDate        DateTime  @default(now())
+  expectedDelivery DateTime
+  actualDelivery   DateTime?
+
+  priority         String    @default("NORMAL")
+  status           String    @default("DRAFT")
+
+  // Item-level summary (detailed specs in OrderItem)
+  metal            String
+  color            String    @default("YELLOW")
+  qty              Int       @default(1)
+  grossWtEst       Decimal
+  grossWtFinal     Decimal?
+
+  // Commercial
+  quotedPrice      Decimal?
+  advancePaid      Decimal   @default(0)
+  totalPrice       Decimal?
+
+  // Current stage pointer (denormalised for fast dashboard queries)
+  currentStageId   String?
+  currentStage     Stage?    @relation(fields: [currentStageId], references: [id])
+
+  // Public tracking
+  publicSlug       String    @unique @default(cuid())
+
+  // Meta
+  referenceImage   String?
+  cadFileUrl       String?
+  specialNotes     String?
+  createdById      String?
+  createdBy        User?     @relation("OrderCreatedBy", fields: [createdById], references: [id])
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  cancelledAt      DateTime?
+  cancelReason     String?
+
+  items        OrderItem[]
+  stageHistory StageHistory[]
+
+  @@index([customerId])
+  @@index([status])
+  @@index([expectedDelivery])
+  @@index([currentStageId])
+}
+
+model OrderItem {
+  id          String  @id @default(cuid())
+  orderId     String
+  order       Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  description String
+  size        String?
+  qty         Int     @default(1)
+
+  // Stones stored as JSON string: [{type, shape, size, qty, quality, source}]
+  stonesJson  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+}
+
+// ----------------------------------------------------------------------------
+// STAGE (master data) + STAGE HISTORY (the backbone)
+// ----------------------------------------------------------------------------
+
+model Stage {
+  id         String   @id @default(cuid())
+  name       String   @unique
+  code       String   @unique
+  sequence   Int      @unique
+  slaDays    Float    @default(1)
+  department String?
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  history       StageHistory[]
+  currentOrders Order[]
+}
+
+model StageHistory {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  stageId   String
+  stage     Stage    @relation(fields: [stageId], references: [id])
+  karigarId String?
+  karigar   Karigar? @relation(fields: [karigarId], references: [id])
+
+  inAt  DateTime  @default(now())
+  outAt DateTime?
+
+  // Weight reconciliation (grams)
+  wtIn   Decimal?
+  wtOut  Decimal?
+  wtLoss Decimal?
+
+  // Stone reconciliation (JSON strings)
+  stonesIssued   String?
+  stonesReturned String?
+
+  status String  @default("IN_PROGRESS")
+  notes  String?
+
+  // Rework tracking
+  reworkFromId String?
+  reworkFrom   StageHistory?  @relation("Rework", fields: [reworkFromId], references: [id])
+  reworks      StageHistory[] @relation("Rework")
+  reworkReason String?
+
+  recordedById String?
+  recordedBy   User?   @relation("StageRecordedBy", fields: [recordedById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([stageId])
+  @@index([karigarId])
+  @@index([status])
+  @@index([inAt])
+}
+
+// ----------------------------------------------------------------------------
+// KARIGAR (worker)
+// ----------------------------------------------------------------------------
+
+model Karigar {
+  id         String    @id @default(cuid())
+  name       String
+  phone      String?
+  department String?
+  active     Boolean   @default(true)
+  joinedOn   DateTime?
+  notes      String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  stageHistory StageHistory[]
+
+  @@index([department])
+  @@index([active])
+}
+
+// ----------------------------------------------------------------------------
+// AUDIT LOG
+// ----------------------------------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  entity    String
+  entityId  String
+  action    String
+  before    String?
+  after     String?
+  ipAddress String?
+  userAgent String?
+  at        DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([userId])
+  @@index([at])
+}
